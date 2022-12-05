@@ -57,7 +57,7 @@ services:
     depends_on:
       - espocrm-mysql
     volumes:
-      - ./data/espocrm:/var/www/html
+     - ./data/espocrm:/var/www/html
     networks:
       - external
       - internal
@@ -82,7 +82,7 @@ services:
       ESPOCRM_CONFIG_WEB_SOCKET_ZERO_M_Q_SUBSCRIBER_DSN: "tcp://*:7777"
       ESPOCRM_CONFIG_USE_WEB_SOCKET: "true"
     volumes:
-      - ./data/espocrm:/var/www/html
+     - ./data/espocrm:/var/www/html
     restart: always
     depends_on:
       - espocrm
