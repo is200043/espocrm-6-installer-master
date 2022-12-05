@@ -680,21 +680,18 @@ function prepareDocker() {
     mv "./installation-modes/$mode/${data[server]}/docker-compose.yml" "${data[homeDirectory]}/docker-compose.yml"
     mv "./installation-modes/$mode/${data[server]}"/* "${data[homeDirectory]}/data/${data[server]}"
 
-    isConfirmed=$(promptConfirmation "Do you want to continue? [y/n] ")
-    if [ "$isConfirmed" != true ]; then
-      # Copy helper commands
-      find "./commands" -type f  | while read file; do
-          fileName=$(basename "$file")
-          cp "$file" "${data[homeDirectory]}/$fileName"
-          chmod +x "${data[homeDirectory]}/$fileName"
-      done
+    # Copy helper commands
+    find "./commands" -type f  | while read file; do
+        fileName=$(basename "$file")
+        cp "$file" "${data[homeDirectory]}/$fileName"
+        chmod +x "${data[homeDirectory]}/$fileName"
+    done
 
-      # Correct existing params
-      local configFile="${data[homeDirectory]}/data/espocrm/data/config.php"
+    # Correct existing params
+    local configFile="${data[homeDirectory]}/data/espocrm/data/config.php"
 
-      if [ -f "$configFile" ]; then
-          sed -i "s#'siteUrl' => '.*'#'siteUrl' => '${data[url]}'#g" "$configFile"
-      fi
+    if [ -f "$configFile" ]; then
+        sed -i "s#'siteUrl' => '.*'#'siteUrl' => '${data[url]}'#g" "$configFile"
     fi
 }
 
