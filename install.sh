@@ -1,32 +1,17 @@
 #!/bin/bash
 
-# EspoCRM installer MASTER
-#
-# EspoCRM - Open Source CRM application.
-# Copyright (C) 2014-2022 Yurii Kuznietsov, Taras Machyshyn, Oleksii Avramenko
-# Website: https://www.espocrm.com
-
 set -e
 
 function printExitError() {
-    local message="$1"
-
-    restoreBackup
-
-    printf "\n"
-    printRedMessage "ERROR"
-    printf ": ${message}\n"
-
-    exit 1
-}
-
-printRedMessage() {
-    local message="$1"
+    local messsage="$1"
 
     local red='\033[0;31m'
     local default='\033[0m'
 
-    printf "${red}${message}${default}"
+    restoreBackup
+
+    printf "\n${red}ERROR${default}: ${messsage}\n"
+    exit 1
 }
 
 function restoreBackup() {
@@ -61,8 +46,6 @@ declare -A data=(
     [adminUsername]="admin"
     [adminPassword]=$(openssl rand -hex 6)
     [homeDirectory]="/var/www/espocrm"
-    [action]="main"
-    [backupPath]="SCRIPT_DIRECTORY/espocrm-backup"
 )
 
 declare -A modes=(
@@ -126,14 +109,6 @@ function handleArguments() {
 
             --adminPassword)
                 data[adminPassword]="${value}"
-                ;;
-
-            --command)
-                data[action]="command"
-                ;;
-
-            --backup-path)
-                data[backupPath]="${value}"
                 ;;
         esac
     done
@@ -233,7 +208,7 @@ function getYamlValue {
     local category="$2"
 
     if [ -f "${data[homeDirectory]}/docker-compose.yml" ]; then
-        sed -n "/${category}:/,/networks:/p" "${data[homeDirectory]}/docker-compose.yml" | grep -oP "(?<=${keyName}: ).*" | head -1
+        sed -n "/${category}:/,/networks:/p" "${data[homeDirectory]}/docker-compose.yml" | grep -oP "(?<=${keyName}: ).*"
     fi
 }
 
@@ -340,61 +315,34 @@ function checkFixSystemRequirements() {
     esac
 }
 
-function getBackupDirectory() {
-    local backupPath="${data[backupPath]}"
-
-    backupPath=${backupPath//SCRIPT_DIRECTORY/$scriptDirectory}
-    backupPath=${backupPath%/}
-
-    echo "${backupPath}/$(date +'%Y-%m-%d_%H%M%S')"
-}
-
 function backupActualInstallation {
+    local withRemoval=${1:-false}
+
     if [ ! -d "${data[homeDirectory]}" ]; then
         return
     fi
 
-    echo "Creating a backup..."
-
-    backupDirectory=$(getBackupDirectory)
-
+    backupDirectory="${scriptDirectory}/espocrm-backup/$(date +'%Y-%m-%d_%H%M%S')"
     mkdir -p "${backupDirectory}"
 
     cp -rp "${data[homeDirectory]}"/* "${backupDirectory}"
 
-    echo "Backup is created: $backupDirectory"
+    echo "Backup created: $backupDirectory"
+
+    if [ "$withRemoval" = true ]; then
+        rm -rf "${data[homeDirectory]}"
+    fi
 }
 
 function cleanInstallation() {
     printf "Cleaning the previous installation...\n"
 
-    docker compose -f "${data[homeDirectory]}/docker-compose.yml" down
-
-    backupActualInstallation
-
-    rm -rf "${data[homeDirectory]}"
-}
-
-function rebaseInstallation() {
-    local isRebase=${rebaseInstallation:-false}
-
-    if [ "$isRebase" != true ]; then
-        return
+    if [ "$(docker ps -aqf "name=espocrm")" ]; then
+        docker stop $(docker ps -aqf "name=espocrm") > /dev/null 2>&1
+        docker rm $(docker ps -aqf "name=espocrm") > /dev/null 2>&1
     fi
 
-    printf "\n"
-    printf "Starting the reinstallation process...\n"
-
-    normalizeActualInstalledData
-
-    backupActualInstallation
-
-    printf "\n"
-
-    docker compose -f "${data[homeDirectory]}/docker-compose.yml" down
-
-    rm -rf "${data[homeDirectory]}/data/${data[server]}"
-    rm "${data[homeDirectory]}/docker-compose.yml"
+    backupActualInstallation true
 }
 
 function cleanTemporaryFiles() {
@@ -571,15 +519,21 @@ function handleExistingInstallation {
 
     printf "\n"
     printf "The installed EspoCRM instance is found.\n"
+    printf "Starting the reinstallation process...\n"
+
+    normalizeActualInstalledData
 
     case "$(getActualInstalledMode)" in
         http | letsencrypt | ssl )
             preInstallationMode=2
-            rebaseInstallation=true
+            backupActualInstallation
+
+            rm -rf "${data[homeDirectory]}/data/${data[server]}"
+            rm "${data[homeDirectory]}/docker-compose.yml"
             ;;
 
         * )
-            printExitError "Unable to determine the current installation mode. If you want to start a clean installation with losing your data, use \"--clean\" option."
+            printExitError "Unable to start the reinstallation process. If you want to start a clean installation with losing your data, use \"--clean\" option."
             ;;
     esac
 }
@@ -653,17 +607,6 @@ function handleInstallationMode() {
     fi
 }
 
-function downloadSourceFiles() {
-    rm -rf ./espocrm-installer-master.zip ./espocrm-installer-master/
-
-    download https://github.com/espocrm/espocrm-installer/archive/refs/heads/master.zip "espocrm-installer-master.zip"
-    unzip -q "espocrm-installer-master.zip"
-
-    if [ ! -d "./espocrm-installer-master" ]; then
-        printExitError "Unable to load source files."
-    fi
-}
-
 function prepareDocker() {
     mkdir -p "${data[homeDirectory]}"
     mkdir -p "${data[homeDirectory]}/data"
@@ -695,33 +638,8 @@ function prepareDocker() {
     fi
 }
 
-runDockerDatabase() {
-    docker compose -f "${data[homeDirectory]}/docker-compose.yml" up -d espocrm-mysql || {
-        restoreBackup
-        exit 1
-    }
-
-    printf "\nWaiting for the database ready.\n"
-
-    local dbUser=$(getYamlValue "MYSQL_USER" espocrm-mysql)
-    local dbPass=$(getYamlValue "MYSQL_PASSWORD" espocrm-mysql)
-
-    for i in {1..36}
-    do
-        docker exec -i espocrm-mysql mysql --user="$dbUser" --password="$dbPass" -e "SHOW DATABASES;" > /dev/null 2>&1 && break
-
-        printf "."
-
-        sleep 5
-    done
-
-    printf "\n"
-}
-
 function runDocker() {
-    runDockerDatabase
-
-    docker compose -f "${data[homeDirectory]}/docker-compose.yml" up -d || {
+    docker-compose -f "${data[homeDirectory]}/docker-compose.yml" up -d || {
         restoreBackup
         exit 1
     }
@@ -729,7 +647,7 @@ function runDocker() {
     printf "\nWaiting for the first-time EspoCRM configuration.\n"
     printf "This may take up to 5 minutes.\n"
 
-    for i in {1..120}
+    for i in {1..60}
     do
         if [ $(curl -sfkLI "${data[url]}" --resolve "${data[domain]}:${data[httpPort]}:127.0.0.1" -o /dev/null -w '%{http_code}\n') == "200" ]; then
             runDockerResult=true
@@ -737,12 +655,6 @@ function runDocker() {
         fi
 
         printf "."
-
-        if [ $i -eq 61 ]; then
-            printf "\n\nYour server is running slow. In 90%% the process is faster.\n"
-            printf "You have to wait 5 more minutes.\n"
-        fi
-
         sleep 5
     done
 
@@ -765,146 +677,111 @@ function displaySummaryInformation() {
     fi
 }
 
-#---------- ACTIONS --------------------
-
-function actionMain() {
-    if [ -z "$noConfirmation" ]; then
-        printf "This script will install EspoCRM with all the needed prerequisites (including Docker, Docker-compose, Nginx, PHP, MySQL).\n"
-
-        isConfirmed=$(promptConfirmation "Do you want to continue the installation? [y/n] ")
-        if [ "$isConfirmed" != true ]; then
-            stopProcess
-        fi
-    fi
-
-    handleExistingInstallation
-
-    normalizePreInstallationMode
-
-    handlePreInstallationMode "$preInstallationMode"
-    handleInstallationMode "$installationMode"
-
-    mode=$(getInstalltionMode)
-
-    normalizeData
-
-    if [ -z "$noConfirmation" ]; then
-        displaySummaryInformation
-    fi
-
-    rebaseInstallation
-
-    checkFixSystemRequirements "$operatingSystem"
-
-    cleanTemporaryFiles
-
-    downloadSourceFiles
-
-    cd "espocrm-installer-master"
-
-    # Check and configure a system
-    case $(getOs) in
-        ubuntu | debian | mint )
-            runShellScript "system-configuration/debian.sh"
-            ;;
-
-        * )
-            printExitError "Your OS is not supported by the script. We recommend to use Ubuntu server."
-            ;;
-    esac
-
-    case $mode in
-        http | ssl | letsencrypt )
-            declare -a params
-            createParamsFromData
-            runShellScript "installation-modes/$mode/init.sh" "${params[@]}"
-            ;;
-
-        * )
-            printExitError "Unknown installation mode \"$mode\"."
-            ;;
-    esac
-
-    # Prepare docker
-    prepareDocker
-
-    # Run Docker
-    runDocker
-
-    printf "\n\n"
-
-    if [ "$runDockerResult" = true ]; then
-        printf "The installation has been successfully completed.\n"
-    else
-        printRedMessage "The installation process is still in progress due to low server performance.\n"
-        printf " - In order to check the process, run:\n"
-        printf "   ${data[homeDirectory]}/command.sh logs\n"
-        printf " - In order to cancel the process, run:\n"
-        printf "   ${data[homeDirectory]}/command.sh stop\n"
-    fi
-
-    # Post installation message
-    case $mode in
-        http )
-            printf "
-IMPORTANT: Your EspoCRM instance is working in HTTP mode.
-If you want to install with SSL/TLS certificate, use \"--ssl\" option. For more details, please visit https://docs.espocrm.com/administration/installation-by-script#installation-with-ssltls-certificate.
-"
-            ;;
-
-        ssl )
-            printf "
-IMPORTANT: Your EspoCRM instance is working in insecure mode with a self-signed certificate.
-You have to setup your own SSL/TLS certificates. For more details, please visit https://docs.espocrm.com/administration/installation-by-script#2-own-ssltls-certificate.
-"
-            ;;
-    esac
-
-    printf "
-Login data/information to your EspoCRM instance:
-URL: ${data[url]}
-Username: ${data[adminUsername]}
-Password: ${data[adminPassword]}
-"
-
-    printf "\nYour instance files are located at: \"${data[homeDirectory]}\".\n"
-}
-
-actionCommand() {
-    downloadSourceFiles
-
-    if [ ! -f "${data[homeDirectory]}/command.sh" ]; then
-        printExitError "EspoCRM directory is not found."
-    fi
-
-    cp ./espocrm-installer-master/commands/command.sh "${data[homeDirectory]}/command.sh" || {
-        printExitError "Unable to update the ${data[homeDirectory]}/command.sh"
-    }
-
-    echo "Done"
-}
-
-#---------------------------------------
-
+#--------------------------------------------
 scriptDirectory="$(dirname "$(readlink -f "$BASH_SOURCE")")"
 operatingSystem=$(getOs)
 
 handleArguments "$@"
 
-# run an action
+if [ -z "$noConfirmation" ]; then
+    printf "This script will install EspoCRM with all the needed prerequisites (including Docker, Docker-compose, Nginx, PHP, MySQL).\n"
 
-case "${data[action]}" in
-    main )
-        actionMain
-        ;;
+    isConfirmed=$(promptConfirmation "Do you want to continue the installation? [y/n] ")
+    if [ "$isConfirmed" != true ]; then
+        stopProcess
+    fi
+fi
 
-    command )
-        actionCommand
+handleExistingInstallation
+
+normalizePreInstallationMode
+
+handlePreInstallationMode "$preInstallationMode"
+handleInstallationMode "$installationMode"
+
+mode=$(getInstalltionMode)
+
+normalizeData
+
+if [ -z "$noConfirmation" ]; then
+    displaySummaryInformation
+fi
+
+checkFixSystemRequirements "$operatingSystem"
+
+cleanTemporaryFiles
+
+# download https://github.com/espocrm/espocrm-installer/archive/refs/heads/master.zip "espocrm-installer-master.zip"
+# unzip -q "espocrm-installer-master.zip"
+cd /opt/
+
+if [ ! -d "./espocrm-installer-master" ]; then
+    printExitError "Unable to load required files."
+fi
+
+cd "espocrm-installer-master"
+
+# Check and configure a system
+case $(getOs) in
+    ubuntu | debian | mint )
+        runShellScript "system-configuration/debian.sh"
         ;;
 
     * )
-        printExitError "Unknown action \"{data[action]}\"."
+        printExitError "Your OS is not supported by the script. We recommend to use Ubuntu server."
         ;;
 esac
+
+case $mode in
+    http | ssl | letsencrypt )
+        declare -a params
+        createParamsFromData
+        runShellScript "installation-modes/$mode/init.sh" "${params[@]}"
+        ;;
+
+    * )
+        printExitError "Unknown installation mode \"$mode\"."
+        ;;
+esac
+
+# Prepare docker
+prepareDocker
+
+# Run Docker
+runDocker
+
+printf "\n\n"
+
+if [ "$runDockerResult" = true ]; then
+    printf "The installation has been successfully completed.\n"
+else
+    printf "Installation is finished.\n"
+fi
+
+# Post installation message
+case $mode in
+    http )
+        printf "
+IMPORTANT: Your EspoCRM instance is working in HTTP mode.
+If you want to install with SSL/TLS certificate, use \"--ssl\" option. For more details, please visit https://docs.espocrm.com/administration/installation-by-script#installation-with-ssltls-certificate.
+"
+        ;;
+
+    ssl )
+        printf "
+IMPORTANT: Your EspoCRM instance is working in insecure mode with a self-signed certificate.
+You have to setup your own SSL/TLS certificates. For more details, please visit https://docs.espocrm.com/administration/installation-by-script#2-own-ssltls-certificate.
+"
+        ;;
+esac
+
+printf "
+Login data/information to your EspoCRM instance:
+  URL: ${data[url]}
+  Username: ${data[adminUsername]}
+  Password: ${data[adminPassword]}
+"
+
+printf "\nYour instance files are located at: \"${data[homeDirectory]}\".\n"
 
 cleanTemporaryFiles
