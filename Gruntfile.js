@@ -66,8 +66,16 @@ module.exports = function (grunt) {
                             replacement: 'releases/download/<%= pkg.version %>/<%= pkg.name %>-<%= pkg.version %>'
                         },
                         {
+                            match: /installer MASTER/g,
+                            replacement: 'installer v<%= pkg.version %>'
+                        },
+                        {
                             match: /espocrm-installer-master/g,
                             replacement: 'espocrm-installer-<%= pkg.version %>'
+                        },
+                        {
+                            match: /2014-20[0-9][0-9] Yu/g,
+                            replacement: '2014-<%= grunt.template.today("yyyy") %> Yu'
                         }
                     ]
                 },
@@ -75,6 +83,10 @@ module.exports = function (grunt) {
                     {
                         src: 'build/tmp/install.sh',
                         dest: 'build/tmp/install.sh'
+                    },
+                    {
+                        src: 'build/tmp/<%= pkg.name %>-<%= pkg.version %>/commands/command.sh',
+                        dest: 'build/tmp/<%= pkg.name %>-<%= pkg.version %>/commands/command.sh'
                     }
                 ]
             }
